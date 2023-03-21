@@ -1,0 +1,12 @@
+# files
+Makefile
+Dockerfile
+.dockerignore
+*.md
+*.env
+*.cover
+
+# dirs
+/test
+/.github
+/deployments
