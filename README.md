@@ -2,6 +2,8 @@
 
 TmpWeather is a telegram bot for predicting the current weather by city name.
 
+[Join](http://t.me/TmpWeatherBot)
+
 It consists of the following parts:
 
 1. go service (App)
