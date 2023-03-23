@@ -2,13 +2,14 @@ version: "3.9"
 services:
   bot:
    restart: unless-stopped
+   profiles:
+      - "dev"
    build:
       dockerfile: Dockerfile
    working_dir: /internal/tmpweather
-   environment:
-      TZ: Europe/Moscow
    env_file:
       - .env
+      - .dbconf.env
    ports:
       - "127.0.0.1:8080:8080"
    links:
@@ -19,16 +20,17 @@ services:
   postgres:
     image: "postgres:15-alpine"
     restart: unless-stopped
+    profiles:
+      - "test"
+      - "dev"
     ports:
       - "5432:5432"
     environment:
-      TZ: Europe/Moscow
-      POSTGRES_USER: "postgres"
-      POSTGRES_PASSWORD: "postgres"
-      POSTGRES_DB: "tmpweather"
       PGDATA: "/data/postgres"
+    env_file:
+      - .dbconf.env
     volumes:
-        - postgres:/data/postgres
+      - postgres:/data/postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 10s
@@ -37,14 +39,18 @@ services:
       start_period: 10s
 
   migrate:
+    profiles:
+      - "dev"
     image: migrate/migrate
+    env_file:
+      - .dbconf.env
     volumes:
-        - ./migrations:/migrations
-    command: ["-path", "/migrations", "-database",  "postgres://postgres:postgres@postgres:5432/tmpweather?sslmode=disable", "up"]
+      - ./migrations:/migrations
+    command: ["-path", "/migrations", "-database",  "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable", "up"]
     links:
-        - postgres
+      - postgres
     depends_on:
-        - postgres
+      - postgres
 
 volumes:
     postgres:
