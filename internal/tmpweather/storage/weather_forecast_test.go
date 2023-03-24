@@ -68,7 +68,7 @@ func TestMain(m *testing.M) {
 		},
 	}
 
-	if c, ok := dockerPool.ContainerByName("test-weather-forecast-repo"); ok {
+	if c, ok := dockerPool.ContainerByName(containerName); ok {
 		if err := dockerPool.Purge(c); err != nil {
 			log.Fatalf("Could not purge container: %s", err)
 		}
