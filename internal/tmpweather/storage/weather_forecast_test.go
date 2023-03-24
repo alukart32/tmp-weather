@@ -274,7 +274,7 @@ func withPostgresTest[TB testing.TB](ctx context.Context, tb TB, test func(t TB,
 		return err
 	}
 
-	// Create a unique database name so that our parallel tests don't clash.
+	// Create a unique schema name so that our parallel tests don't clash.
 	var id [8]byte
 	rand.Read(id[:])
 	schemaName := tb.Name() + "_" + hex.EncodeToString(id[:])
@@ -288,7 +288,7 @@ func withPostgresTest[TB testing.TB](ctx context.Context, tb TB, test func(t TB,
 		conn.Release()
 	}()
 
-	// Create test database.
+	// Create test schema.
 	if err := createSchema(ctx, conn, schemaName); err != nil {
 		tb.Fatalf("unable to create schema: %v", err)
 	}
@@ -298,7 +298,7 @@ func withPostgresTest[TB testing.TB](ctx context.Context, tb TB, test func(t TB,
 		}
 	}()
 
-	// Connect to the test database.
+	// Connect to the test schema.
 	connURI, err := uriWithSchema(testDatabaseURI(), sanitize(schemaName))
 	if err != nil {
 		tb.Fatal(err)
@@ -306,7 +306,7 @@ func withPostgresTest[TB testing.TB](ctx context.Context, tb TB, test func(t TB,
 
 	migrateDb(tb, connURI)
 
-	// Create a new connection to the database.
+	// Create a new connection to the schema.
 	db, err := pgxpool.New(ctx, connURI)
 	if err != nil {
 		tb.Fatalf("Unable to create the postgres pool to %v: %v", schemaName, err)
