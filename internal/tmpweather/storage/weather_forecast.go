@@ -53,8 +53,8 @@ VALUES
 	($1, $2, $3, $4, $5, $6, $7)
 `
 
-// Upsert a new weather forecast data.
-func (r *WeatherForecastRepo) Upsert(ctx context.Context, f WeatherForecast) error {
+// Insert adds a new weather forecast data.
+func (r *WeatherForecastRepo) Insert(ctx context.Context, f WeatherForecast) error {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:       pgx.ReadCommitted,
 		AccessMode:     pgx.ReadWrite,

@@ -117,7 +117,7 @@ func (p MsgHandler) Handle(ctx context.Context) {
 					}
 					logger.Debug().Object("forecast", forecast).Msg("forecast respond")
 
-					err = p.ForecastRepo.Upsert(ctx, storage.WeatherForecast{
+					err = p.ForecastRepo.Insert(ctx, storage.WeatherForecast{
 						MsgID:  update.Message.MessageID,
 						City:   cityName,
 						Desc:   forecast.Weather[0].Description,
