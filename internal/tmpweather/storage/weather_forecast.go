@@ -84,12 +84,8 @@ func (r *WeatherForecastRepo) Upsert(ctx context.Context, f WeatherForecast) err
 // WeatherForecastStat represents the weather forecast statistics.
 type WeatherForecastStat struct {
 	TopRecords struct {
-		maxTempCity string
-		maxTemp     float64
-		maxHumCity  string
-		maxHum      int64
-		maxWindCity string
-		maxWind     float64
+		city    string
+		maxTemp float64
 	}
 	firstRecordAt time.Time
 	total         int
@@ -103,15 +99,8 @@ func (f WeatherForecastStat) ToMsg() string {
 	fmt.Fprintf(&sb, "\t\trecords: %d\n", f.total)
 	fmt.Fprintf(&sb, "\t\t1st at: %v\n\n", f.firstRecordAt.Format(time.RFC822))
 	fmt.Fprintf(&sb, "Top forecast\n")
-	fmt.Fprintf(&sb, "\t\t- max temp\n")
-	fmt.Fprintf(&sb, "\t\t\t\t\t\tcity: %v\n", f.TopRecords.maxTempCity)
-	fmt.Fprintf(&sb, "\t\t\t\t\t\ttemp: %.2f C\n\n", f.TopRecords.maxTemp)
-	fmt.Fprintf(&sb, "\t\t- max humidity\n")
-	fmt.Fprintf(&sb, "\t\t\t\t\t\tcity: %v\n", f.TopRecords.maxHumCity)
-	fmt.Fprintf(&sb, "\t\t\t\t\t\thum: %d %%\n\n", f.TopRecords.maxHum)
-	fmt.Fprintf(&sb, "\t\t- max wind\n")
-	fmt.Fprintf(&sb, "\t\t\t\t\t\tcity: %v\n", f.TopRecords.maxWindCity)
-	fmt.Fprintf(&sb, "\t\t\t\t\t\twind: %.2f m/s\n", f.TopRecords.maxWind)
+	fmt.Fprintf(&sb, "\t\tcity: %v\n", f.TopRecords.city)
+	fmt.Fprintf(&sb, "\t\ttemp: %.2f C\n", f.TopRecords.maxTemp)
 
 	return sb.String()
 }
@@ -121,83 +110,45 @@ func (f WeatherForecastStat) MarshalZerologObject(e *zerolog.Event) {
 	e.
 		Int("total", f.total).
 		Time("firstRecordAt", f.firstRecordAt).
-		Dict("topRecords", zerolog.Dict().
-			Str("maxTempCity", f.TopRecords.maxTempCity).
-			Float64("maxTemp", f.TopRecords.maxTemp).
-			Str("maxHumCity", f.TopRecords.maxHumCity).
-			Int64("maxHum", f.TopRecords.maxHum).
-			Str("maxWindCity", f.TopRecords.maxWindCity).
-			Float64("maxWind", f.TopRecords.maxWind))
+		Dict("topRecord", zerolog.Dict().
+			Str("city", f.TopRecords.city).
+			Float64("temp", f.TopRecords.maxTemp))
 }
 
 const getWeatherForecastStat = `
 SELECT
-  first_record.made_at AS first_record,
+  first_record.made_at AS first_made,
   total_records.count AS total,
-  top_temp.city AS top_temp_city,
-  top_temp.value AS top_temp,
-  top_hum.city AS top_hum_city,
-  top_hum.value AS top_hum,
-  top_wind.city AS top_wind_city,
-  top_wind.value AS top_wind
+  top_temp.city,
+  top_temp.max_temp
 FROM
   (
-    SELECT
-      made_at
-    FROM
-      forecasts
-    ORDER BY
-      made_at ASC
-    LIMIT
-      1
-  ) AS first_record,
-  (
-    SELECT
-      COUNT(*) AS COUNT
-    FROM
-      forecasts
-    LIMIT
-      1
+  	SELECT
+   	  COUNT(*) AS count
+	FROM
+   	  forecasts
   ) AS total_records,
   (
-    SELECT
-      city,
-      MAX(DISTINCT TEMP):: numeric(10, 2) AS value
-    FROM
-      forecasts
-    GROUP BY
-      city
-    ORDER BY
-      value DESC
-    LIMIT
-      1
-  ) AS top_temp,
+	SELECT
+	  made_at
+	FROM
+	  forecasts
+	ORDER BY
+	  made_at ASC
+	LIMIT 1
+  ) AS first_record,
   (
-    SELECT
+	SELECT
       city,
-      MAX(DISTINCT hum):: numeric(10, 2) AS value
+	  MAX(DISTINCT temp)::numeric(10, 2) AS max_temp
     FROM
       forecasts
     GROUP BY
       city
     ORDER BY
-      value DESC
-    LIMIT
-      1
-  ) AS top_hum,
-  (
-    SELECT
-      city,
-      MAX(DISTINCT wind):: numeric(10, 2) AS value
-    FROM
-      forecasts
-    GROUP BY
-      city
-    ORDER BY
-      value DESC
-    LIMIT
-      1
-  ) AS top_wind;
+	  max_temp DESC
+    LIMIT 1
+  ) AS top_temp
 `
 
 // Stat returns the weather forecast statistics.
@@ -225,12 +176,8 @@ func (r *WeatherForecastRepo) Stat(ctx context.Context) (WeatherForecastStat, er
 	err = row.Scan(
 		&stat.firstRecordAt,
 		&stat.total,
-		&stat.TopRecords.maxTempCity,
+		&stat.TopRecords.city,
 		&stat.TopRecords.maxTemp,
-		&stat.TopRecords.maxHumCity,
-		&stat.TopRecords.maxHum,
-		&stat.TopRecords.maxWindCity,
-		&stat.TopRecords.maxWind,
 	)
 	if err != nil && errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNoData
