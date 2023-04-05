@@ -1,38 +1,38 @@
-//go:build integration
+// go:build integration
 
 package storage
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/alukart32/tmp-weather/internal/pkg/db/migrate"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 )
 
-var pool *pgxpool.Pool
+func TestWeatherForecastSuite(t *testing.T) {
+	suite.Run(t, new(WeatherForecastTestSuite))
+}
 
-var (
-	dbName     = os.Getenv("POSTGRES_DB")
-	dbPassword = os.Getenv("POSTGRES_PASSWORD")
-	dbUser     = os.Getenv("POSTGRES_USER")
-	dbPort     = os.Getenv("POSTGRES_PORT")
-)
+type WeatherForecastTestSuite struct {
+	suite.Suite
+	pool           *pgxpool.Pool
+	purgeContainer func()
+}
 
-func TestMain(m *testing.M) {
+func (suite *WeatherForecastTestSuite) SetupSuite() {
 	var (
+		dbName        = os.Getenv("POSTGRES_DB")
+		dbPassword    = os.Getenv("POSTGRES_PASSWORD")
+		dbUser        = os.Getenv("POSTGRES_USER")
+		dbPort        = os.Getenv("POSTGRES_PORT")
 		containerName = os.Getenv("POSTGRES_CONTAINER_NAME")
 		image         = os.Getenv("POSTGRES_IMAGE")
 		imageTag      = os.Getenv("POSTGRES_IMAGE_TAG")
@@ -68,256 +68,161 @@ func TestMain(m *testing.M) {
 		},
 	}
 
-	if c, ok := dockerPool.ContainerByName(containerName); ok {
-		if err := dockerPool.Purge(c); err != nil {
+	// Purge existed test container.
+	container, ok := dockerPool.ContainerByName(containerName)
+	if ok {
+		if err := dockerPool.Purge(container); err != nil {
 			log.Fatalf("Could not purge container: %s", err)
 		}
 	}
-
-	container, err := dockerPool.RunWithOptions(&opts)
+	// Run a new test container.
+	container, err = dockerPool.RunWithOptions(&opts)
 	if err != nil {
 		log.Fatalf("Could not start container: %s", err)
 	}
 
 	// Wait until the container is ready.
 	if err := dockerPool.Retry(func() error {
+		// Test pool connectivity.
 		ctx := context.Background()
-		pool, err = pgxpool.New(ctx, testDatabaseURI())
+		suite.pool, err = pgxpool.New(ctx, fmt.Sprintf("postgres://%v:%v@localhost:%v/%v",
+			dbUser, dbPassword, dbPort, dbName))
 		if err != nil {
 			return err
 		}
-		return pool.Ping(ctx)
+		return suite.pool.Ping(ctx)
 	}); err != nil {
 		log.Fatalf("Could not connect to database: %s", err)
 	}
 
-	// Run tests.
-	code := m.Run()
+	migrateDb(suite.T(), suite.pool.Config().ConnString())
 
-	// Purge the test container.
-	if err := dockerPool.Purge(container); err != nil {
-		log.Fatalf("Could not purge container: %s", err)
-	}
-	// Close the postgres pool.
-	pool.Close()
-
-	os.Exit(code)
-}
-
-func TestForecastRepo_Upsert(t *testing.T) {
-	tests := []struct {
-		name    string
-		data    WeatherForecast
-		wantErr bool
-	}{
-		{
-			name: "Valid weather forecast",
-			data: WeatherForecast{
-				MsgID:  1,
-				City:   "Test",
-				Desc:   "testable",
-				Temp:   1.0,
-				Hum:    2,
-				Wind:   3.0,
-				MadeAt: time.Now(),
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withPostgresTest(context.TODO(), t, func(t *testing.T, pool *pgxpool.Pool) {
-				t.Parallel()
-				repo, err := NewWeatherForecastRepo(pool)
-				if err != nil {
-					t.Fatalf("unable to create repo: %v", err)
-				}
-
-				upsertCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
-				defer cancel()
-
-				err = repo.Upsert(upsertCtx, tt.data)
-				if tt.wantErr {
-					require.Error(t, err)
-				}
-			})
-		})
-	}
-}
-
-func TestForecastRepo_Stat(t *testing.T) {
-	firstCreatedAt := time.Now()
-	tests := []struct {
-		name      string
-		forecasts []WeatherForecast
-		wantStat  WeatherForecastStat
-		wantErr   bool
-	}{
-		{
-			name: "Valid stat",
-			forecasts: []WeatherForecast{
-				{
-					MsgID:  1,
-					City:   "A",
-					Desc:   "max temp",
-					Temp:   30.0,
-					Hum:    2,
-					Wind:   3.0,
-					MadeAt: firstCreatedAt,
-				},
-				{
-					MsgID:  2,
-					City:   "B",
-					Desc:   "max hum",
-					Temp:   1.0,
-					Hum:    90,
-					Wind:   3.0,
-					MadeAt: time.Now(),
-				},
-				{
-					MsgID:  3,
-					City:   "C",
-					Desc:   "max wind",
-					Temp:   1.0,
-					Hum:    2,
-					Wind:   12.0,
-					MadeAt: time.Now(),
-				},
-				{
-					MsgID:  4,
-					City:   "D",
-					Desc:   "casual weather",
-					Temp:   1.0,
-					Hum:    2,
-					Wind:   3.0,
-					MadeAt: time.Now(),
-				},
-			},
-			wantStat: WeatherForecastStat{
-				total:         4,
-				firstRecordAt: firstCreatedAt,
-				TopRecords: struct {
-					maxTempCity string
-					maxTemp     float64
-					maxHumCity  string
-					maxHum      int64
-					maxWindCity string
-					maxWind     float64
-				}{
-					maxTempCity: "A",
-					maxTemp:     30.0,
-					maxHumCity:  "B",
-					maxHum:      90,
-					maxWindCity: "C",
-					maxWind:     12.0,
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withPostgresTest(context.TODO(), t, func(t *testing.T, pool *pgxpool.Pool) {
-				t.Parallel()
-				repo, err := NewWeatherForecastRepo(pool)
-				if err != nil {
-					t.Fatalf("unable to create repo: %v", err)
-				}
-
-				upsertCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
-				defer cancel()
-
-				for _, v := range tt.forecasts {
-					require.NoError(t, repo.Upsert(upsertCtx, v))
-				}
-
-				statCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
-				defer cancel()
-
-				stat, err := repo.Stat(statCtx)
-				if tt.wantErr {
-					require.Error(t, err)
-					return
-				}
-
-				assert.Equal(t, tt.wantStat.total, stat.total,
-					"expected total: %d, was %d", tt.wantStat.total, stat.total)
-				assert.Equal(t, 0, tt.wantStat.firstRecordAt.Compare(stat.firstRecordAt),
-					"expected firstRecordAt: %v, was %v", tt.wantStat.firstRecordAt, stat.firstRecordAt)
-				assert.Equal(t, tt.wantStat.TopRecords.maxTempCity, stat.TopRecords.maxTempCity,
-					"expected maxTempCity: %v, was %v", tt.wantStat.TopRecords.maxTempCity, stat.TopRecords.maxTempCity)
-				assert.Equal(t, tt.wantStat.TopRecords.maxTemp, stat.TopRecords.maxTemp,
-					"expected maxTemp: %v, was %v", tt.wantStat.TopRecords.maxTemp, stat.TopRecords.maxTemp)
-				assert.Equal(t, tt.wantStat.TopRecords.maxHumCity, stat.TopRecords.maxHumCity,
-					"expected maxHumCity: %v, was %v", tt.wantStat.TopRecords.maxHumCity, stat.TopRecords.maxHumCity)
-				assert.Equal(t, tt.wantStat.TopRecords.maxHum, stat.TopRecords.maxHum,
-					"expected maxHum: %v, was %v", tt.wantStat.TopRecords.maxHum, stat.TopRecords.maxHum)
-				assert.Equal(t, tt.wantStat.TopRecords.maxWindCity, stat.TopRecords.maxWindCity,
-					"expected maxWindCity: %v, was %v", tt.wantStat.TopRecords.maxWindCity, stat.TopRecords.maxWindCity)
-				assert.Equal(t, tt.wantStat.TopRecords.maxWind, stat.TopRecords.maxWind,
-					"expected maxWind: %v, was %v", tt.wantStat.TopRecords.maxWind, stat.TopRecords.maxWind)
-			})
-		})
-	}
-}
-
-func withPostgresTest[TB testing.TB](ctx context.Context, tb TB, test func(t TB, pool *pgxpool.Pool)) {
-	sanitize := func(schema string) string {
-		return pgx.Identifier{schema}.Sanitize()
-	}
-	createSchema := func(ctx context.Context, c *pgxpool.Conn, name string) error {
-		_, err := c.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS `+sanitize(name))
-		return err
-	}
-	dropSchema := func(ctx context.Context, c *pgxpool.Conn, name string) error {
-		_, err := c.Exec(ctx, `DROP SCHEMA IF EXISTS `+sanitize(name)+` CASCADE`)
-		return err
-	}
-
-	// Create a unique schema name so that our parallel tests don't clash.
-	var id [8]byte
-	rand.Read(id[:])
-	schemaName := tb.Name() + "_" + hex.EncodeToString(id[:])
-
-	// Create the main db connection.
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		tb.Fatalf("unable to create tx: %v", err)
-	}
-	defer func() {
-		conn.Release()
-	}()
-
-	// Create test schema.
-	if err := createSchema(ctx, conn, schemaName); err != nil {
-		tb.Fatalf("unable to create schema: %v", err)
-	}
-	defer func() {
-		if err := dropSchema(ctx, conn, schemaName); err != nil {
-			tb.Fatalf("unable to drop schema: %v", err)
+	suite.purgeContainer = func() {
+		if err := dockerPool.Purge(container); err != nil {
+			log.Fatalf("Could not purge container: %s", err)
 		}
-	}()
+	}
+}
 
-	// Connect to the test schema.
-	connURI, err := uriWithSchema(testDatabaseURI(), sanitize(schemaName))
+func (suite *WeatherForecastTestSuite) TearDownSuite() {
+	// Purge the test container.
+	suite.purgeContainer()
+	// Close the postgres pool.
+	suite.pool.Close()
+}
+
+// this function executes after each test case
+func (suite *WeatherForecastTestSuite) TearDownTest() {
+	fmt.Printf("-- TearDown %v\n", suite.T().Name())
+
+	_, err := suite.pool.Exec(context.Background(), "TRUNCATE TABLE forecasts CASCADE")
 	if err != nil {
-		tb.Fatal(err)
+		suite.Fail(err.Error())
 	}
+}
 
-	migrateDb(tb, connURI)
-
-	// Create a new connection to the schema.
-	db, err := pgxpool.New(ctx, connURI)
+func (suite *WeatherForecastTestSuite) Test_Insert() {
+	repo, err := NewWeatherForecastRepo(suite.pool)
 	if err != nil {
-		tb.Fatalf("Unable to create the postgres pool to %v: %v", schemaName, err)
+		suite.Fail("failed to create WeatherForecastRepo: %v", err)
 	}
-	if err = db.Ping(ctx); err != nil {
-		tb.Fatalf("Unable to ping: %v", err)
-	}
-	defer db.Close()
 
-	// Run test code.
-	test(tb, db)
+	upsertCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
+	defer cancel()
+
+	data := WeatherForecast{
+		MsgID:  1,
+		City:   "Test",
+		Desc:   "testable",
+		Temp:   1.0,
+		Hum:    2,
+		Wind:   3.0,
+		MadeAt: time.Now(),
+	}
+
+	err = repo.Insert(upsertCtx, data)
+	suite.Require().NoError(err)
+}
+
+func (suite *WeatherForecastTestSuite) Test_Stat() {
+	firstCreatedAt := time.Now()
+
+	forecasts := []WeatherForecast{
+		{
+			MsgID:  1,
+			City:   "A",
+			Desc:   "max temp",
+			Temp:   30.0,
+			Hum:    2,
+			Wind:   3.0,
+			MadeAt: firstCreatedAt,
+		},
+		{
+			MsgID:  2,
+			City:   "B",
+			Desc:   "max hum",
+			Temp:   1.0,
+			Hum:    90,
+			Wind:   3.0,
+			MadeAt: time.Now(),
+		},
+		{
+			MsgID:  3,
+			City:   "C",
+			Desc:   "max wind",
+			Temp:   1.0,
+			Hum:    2,
+			Wind:   12.0,
+			MadeAt: time.Now(),
+		},
+		{
+			MsgID:  4,
+			City:   "D",
+			Desc:   "casual weather",
+			Temp:   1.0,
+			Hum:    2,
+			Wind:   3.0,
+			MadeAt: time.Now(),
+		},
+	}
+	wantStat := WeatherForecastStat{
+		total:         4,
+		firstRecordAt: firstCreatedAt,
+		TopRecords: struct {
+			city    string
+			maxTemp float64
+		}{
+			city:    "A",
+			maxTemp: 30.0,
+		},
+	}
+
+	repo, err := NewWeatherForecastRepo(suite.pool)
+	if err != nil {
+		suite.Fail("failed to create repo: %v", err)
+	}
+
+	insertCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
+	defer cancel()
+
+	for _, v := range forecasts {
+		suite.Require().NoError(repo.Insert(insertCtx, v))
+	}
+
+	statCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
+	defer cancel()
+
+	stat, err := repo.Stat(statCtx)
+	suite.Require().NoError(err)
+
+	suite.Equal(wantStat.total, stat.total,
+		"expected total: %d, was %d", wantStat.total, stat.total)
+	suite.Equal(wantStat.firstRecordAt.Format(time.RFC3339), stat.firstRecordAt.Format(time.RFC3339),
+		"expected firstRecordAt: %v, was %v", wantStat.firstRecordAt, stat.firstRecordAt)
+	suite.Equal(wantStat.TopRecords.city, stat.TopRecords.city,
+		"expected maxTempCity: %v, was %v", wantStat.TopRecords.city, stat.TopRecords.city)
+	suite.Equal(wantStat.TopRecords.maxTemp, stat.TopRecords.maxTemp,
+		"expected maxTemp: %v, was %v", wantStat.TopRecords.maxTemp, stat.TopRecords.maxTemp)
 }
 
 // migrateDb migrates the sql schema of the database.
@@ -325,24 +230,4 @@ func migrateDb[TB testing.TB](tb TB, uri string) {
 	if err := migrate.Up(uri, ""); err != nil {
 		tb.Fatalf("Unable to migrate: %v", err)
 	}
-}
-
-// testDatabaseURI returns the test database connection URI.
-func testDatabaseURI() string {
-	return fmt.Sprintf("postgres://%v:%v@localhost:%v/%v",
-		dbUser, dbPassword, dbPort, dbName)
-}
-
-// uriWithSchema adds a schema to the database connection URI.
-func uriWithSchema(uri, schema string) (string, error) {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return "", fmt.Errorf("invalid connstr: %q", uri)
-	}
-
-	values := u.Query()
-	values.Set("search_path", schema)
-	u.RawQuery = values.Encode()
-
-	return u.String(), nil
 }
